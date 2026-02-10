@@ -794,6 +794,53 @@ bool ENRUpdateTuple(Relation rel, HeapTuple tup)
  * Find matching tuple in ENR catalog list for DROP/UPDATE operations.
  * Returns the ListCell containing the matching tuple, or NULL if not found.
  */
+static ListCell *
+find_tuple_in_enr_catalog(List *cattups, HeapTuple search_tup, Oid catalog_oid)
+{
+	ListCell *lc;
+
+	foreach(lc, cattups)
+	{
+		HeapTuple enr_tup = (HeapTuple) lfirst(lc);
+		
+		switch (catalog_oid)
+		{
+			case IndexRelationId:
+			{
+				Form_pg_index idx1 = (Form_pg_index) GETSTRUCT(search_tup);
+				Form_pg_index idx2 = (Form_pg_index) GETSTRUCT(enr_tup);
+				if (idx1->indexrelid == idx2->indexrelid)
+					return lc;
+				break;
+			}
+			case AttrDefaultRelationId:
+			{
+				Form_pg_attrdef def1 = (Form_pg_attrdef) GETSTRUCT(search_tup);
+				Form_pg_attrdef def2 = (Form_pg_attrdef) GETSTRUCT(enr_tup);
+				if (def1->oid == def2->oid)
+					return lc;
+				break;
+			}
+			case ConstraintRelationId:
+			{
+				Form_pg_constraint con1 = (Form_pg_constraint) GETSTRUCT(search_tup);
+				Form_pg_constraint con2 = (Form_pg_constraint) GETSTRUCT(enr_tup);
+				if (con1->oid == con2->oid)
+					return lc;
+				break;
+			}
+			default:
+				elog(ERROR, "Unsupported catalog OID %u for tuple matching", catalog_oid);
+		}
+	}
+	
+	return NULL;
+}
+
+/*
+ * Find matching tuple in ENR catalog list for DROP/UPDATE operations.
+ * Returns the ListCell containing the matching tuple, or NULL if not found.
+ */
 static ListCell*
 find_tuple_in_enr_catalog(List *cattups, HeapTuple search_tup, Oid catalog_oid)
 {
@@ -1000,6 +1047,9 @@ static bool _ENR_tuple_operation(Relation catalog_rel, HeapTuple tup, ENRTupleOp
 					
 					if (op == ENR_OP_DROP || op == ENR_OP_UPDATE)
 						lc = find_tuple_in_enr_catalog(*list_ptr, tup, catalog_oid);
+					
+					if (op == ENR_OP_DROP || op == ENR_OP_UPDATE)
+						lc = find_tuple_in_enr_catalog(*list_ptr, tup, catalog_oid);
 
 					if ((op == ENR_OP_ADD || op == ENR_OP_UPDATE) && HeapTupleIsValid(tup))
 					{
@@ -1080,7 +1130,22 @@ static bool _ENR_tuple_operation(Relation catalog_rel, HeapTuple tup, ENRTupleOp
 				if ((enr = get_ENR_withoid(queryEnv, rel_oid, ENR_TSQL_TEMP, false))) {
 					list_ptr = &enr->md.cattups[ENR_CATTUP_CONSTRAINT];
 					ret = true;
+					ret = true;
 					
+					if (op == ENR_OP_DROP || op == ENR_OP_UPDATE) {
+						lc = find_tuple_in_enr_catalog(*list_ptr, tup, catalog_oid);
+					} else if (op == ENR_OP_ADD) {
+						Form_pg_constraint tf1 = (Form_pg_constraint) GETSTRUCT(tup);
+						ListCell *curlc;
+						foreach(curlc, enr->md.cattups[ENR_CATTUP_CONSTRAINT]) {
+							Form_pg_constraint tf2 = (Form_pg_constraint) GETSTRUCT((HeapTuple) lfirst(curlc));
+							if (tf2->oid >= tf1->oid) {
+								lc = curlc;
+								insert_at = foreach_current_index(curlc);
+								break;
+							}
+						}
+					}
 					switch (op)
 					{
 						case ENR_OP_ADD:
@@ -1144,6 +1209,9 @@ static bool _ENR_tuple_operation(Relation catalog_rel, HeapTuple tup, ENRTupleOp
 				if ((enr = get_ENR_withoid(queryEnv, rel_oid, ENR_TSQL_TEMP, false))) {
 					list_ptr = &enr->md.cattups[ENR_CATTUP_ATTR_DEF_REL];
 					ret = true;
+					
+					if (op == ENR_OP_DROP || op == ENR_OP_UPDATE)
+						lc = find_tuple_in_enr_catalog(*list_ptr, tup, catalog_oid);
 					
 					if (op == ENR_OP_DROP || op == ENR_OP_UPDATE)
 						lc = find_tuple_in_enr_catalog(*list_ptr, tup, catalog_oid);
